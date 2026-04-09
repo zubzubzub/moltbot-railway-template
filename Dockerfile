@@ -20,10 +20,6 @@ RUN corepack enable
 
 WORKDIR /openclaw
 
-# OpenClaw version control:
-# - Set OPENCLAW_VERSION Railway variable to use a specific tag (e.g., v2026.2.15)
-# - If not set, defaults to main branch (original behavior)
-# - Can also override locally with --build-arg OPENCLAW_VERSION=<tag>
 ARG OPENCLAW_VERSION
 RUN set -eu; \
   if [ -n "${OPENCLAW_VERSION:-}" ]; then \
@@ -35,12 +31,10 @@ RUN set -eu; \
   fi; \
   git clone --depth 1 --branch "${REF}" https://github.com/openclaw/openclaw.git .
 
-# Patch: relax version requirements for packages that may reference unpublished versions.
-# Apply to all extension package.json files to handle workspace protocol (workspace:*).
 RUN set -eux; \
   find ./extensions -name 'package.json' -type f | while read -r f; do \
-    sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*">=[^"]+"/"openclaw": "*"/g' "$f"; \
-    sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*"workspace:[^"]+"/"openclaw": "*"/g' "$f"; \
+    sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*">=[^"]+"/\"openclaw\": \"*\"/g' "$f"; \
+    sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*"workspace:[^"]+"/\"openclaw\": \"*\"/g' "$f"; \
   done
 
 RUN pnpm install --no-frozen-lockfile
@@ -67,10 +61,9 @@ RUN apt-get update \
     python3 \
     pkg-config \
     sudo \
+    tini \
   && rm -rf /var/lib/apt/lists/*
 
-# Install Homebrew (must run as non-root user)
-# Create a user for Homebrew installation, install it, then make it accessible to all users
 RUN useradd -m -s /bin/bash linuxbrew \
   && echo 'linuxbrew ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
@@ -83,15 +76,12 @@ ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 
 WORKDIR /app
 
-# Wrapper deps
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --prod --frozen-lockfile && pnpm store prune
 
-# Copy built openclaw
 COPY --from=openclaw-build /openclaw /openclaw
 
-# Provide a openclaw executable
 RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /openclaw/dist/entry.js "$@"' > /usr/local/bin/openclaw \
   && chmod +x /usr/local/bin/openclaw
 
@@ -99,4 +89,7 @@ COPY src ./src
 
 ENV PORT=8080
 EXPOSE 8080
+
+# tini as PID 1: reaps zombie children, prevents EAGAIN (incident 2026-04-09)
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "src/server.js"]
